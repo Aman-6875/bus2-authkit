@@ -10,9 +10,18 @@ version by version.
 
 ## Install
 
+This repository is **private**, so Go's public module proxy/checksum
+database can't reach it. Set `GOPRIVATE` before `go get` (once per machine,
+e.g. in your shell profile, or export it inline):
+
 ```
-go get github.com/Aman-6875/bus2-authkit
+export GOPRIVATE=github.com/Aman-6875/*
+go get github.com/Aman-6875/bus2-authkit@v0.1.0
 ```
+
+This also requires `git` to be able to authenticate to GitHub for this
+account (an SSH key, or `gh auth login` / a credential helper) — the module
+is fetched by cloning the repo, not through the public proxy.
 
 ## What it does
 
