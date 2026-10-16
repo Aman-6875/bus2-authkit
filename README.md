@@ -16,7 +16,7 @@ e.g. in your shell profile, or export it inline):
 
 ```
 export GOPRIVATE=github.com/Aman-6875/*
-go get github.com/Aman-6875/bus2-authkit@v0.1.0
+go get github.com/Aman-6875/bus2-authkit@v0.2.0
 ```
 
 This also requires `git` to be able to authenticate to GitHub for this
@@ -31,6 +31,12 @@ is fetched by cloning the repo, not through the public proxy.
 2. **Authorization** — role checks (`Claims.HasRole`, `middleware.RequireRole`)
    and a `Can()`-style ability check (`middleware.RequireCan`), modeled on
    Laravel's `can()`.
+3. **Freshness** (optional) — detects that a token's subject or roles
+   changed *after* the token was issued, via `FreshnessChecker`, and rejects
+   it even though it hasn't expired yet.
+4. **Live permissions** (optional) — `LivePermissions` resolves a role's
+   abilities from the owning service on demand, caching the result until an
+   `EventRoleChanged` event invalidates it.
 
 ## Quick start
 
@@ -84,13 +90,54 @@ Downstream handlers can read the verified claims via:
 claims, ok := middleware.ClaimsFromContext(r.Context())
 ```
 
+## Freshness and live permissions (optional)
+
+Both are opt-in — skip this section entirely if you only need
+`RequireAuth`/`RequireRole` against the token's own claims.
+
+```go
+source := kafka.NewEventSource(kafka.Config{
+	Brokers: []string{"redpanda:9092"},
+	Topic:   "authz.permissions-changed",
+	// TLS / SASLMechanism: set both for production, leave nil for local dev.
+})
+
+freshness, err := authkit.NewFreshnessChecker(ctx, source, time.Hour) // maxAge: longest token TTL this service accepts
+verifier.WithFreshnessChecker(freshness)
+
+livePerms, err := authkit.NewLivePermissions(ctx, authkit.HTTPRoleFetcher{BaseURL: "http://authz:8090"}, source)
+// use livePerms wherever a PermissionResolver is expected, e.g.:
+middleware.RequireCan(verifier, "refund_ticket", livePerms, refundHandler)
+```
+
+Requirements for the Kafka/Redpanda topic backing `source`:
+- **Exactly one partition** — `NewEventSource` always reads partition 0; every
+  service instance must see every event, so this intentionally isn't a
+  load-balanced consumer group.
+- **Retention roughly equal to the longest `maxAge`/token TTL in use** —
+  `NewEventSource` starts from the earliest retained offset so a freshly
+  started instance backfills recent history, not just new events.
+
+The publishing side (e.g. `authz`, whenever it changes a role or membership):
+
+```go
+publisher := kafka.NewPublisher(kafka.Config{Brokers: [...], Topic: "authz.permissions-changed"}, "authz")
+defer publisher.Close()
+
+publisher.Publish(ctx, authkit.PermissionsChangedEvent{
+	Type:      authkit.EventUserChanged, // or EventRoleChanged
+	Subject:   userID,                   // or the role name
+	ChangedAt: time.Now(),
+})
+```
+
 ## Errors
 
 `Verify` returns one of these sentinel errors (via `errors.Is`), so callers
 never need to know which underlying JWT library this module uses:
 
 `ErrMissingToken`, `ErrInvalidToken`, `ErrTokenExpired`, `ErrIssuerMismatch`,
-`ErrAudienceMismatch`, `ErrForbidden`.
+`ErrAudienceMismatch`, `ErrForbidden`, `ErrTokenStale`.
 
 ## Testing
 
@@ -98,17 +145,22 @@ never need to know which underlying JWT library this module uses:
 go test ./... -v
 ```
 
-Tests run against a fake, in-process JWKS server (no real Hydra needed) —
-see `verifier_test.go`.
+Every test runs against a fake JWKS server, a fake `EventSource`, a fake
+`RoleFetcher`, or a fake HTTP server — no real Hydra, Kafka, or authz needed.
+The `kafka` subpackage's test only covers its JSON wire format (encode then
+decode); it doesn't open a real broker connection.
 
 ## Current limitations
 
-- `RequireCan`/`Can` only works against a `PermissionResolver` you supply
-  yourself (e.g. `StaticPermissions`, a fixed map) — there is no live,
-  auto-refreshing role→permission cache yet. See ROADMAP.md.
-- No token revocation/freshness check — a token is trusted at face value
-  until it expires, even if the underlying user's role changed. See
-  ROADMAP.md.
 - Middleware errors are written as plain text (`http.Error`), not JSON.
   Services needing a JSON error body should wrap the sentinel errors
   themselves for now.
+- `Config.Audience` is usually left empty in practice — no BUS 2.0 panel
+  requests an `audience` parameter at Hydra's `/oauth2/auth` yet.
+- No ready-made `fx.Module` — services using `go.uber.org/fx` wire
+  `NewVerifier` (and `NewFreshnessChecker`/`NewLivePermissions`, if used)
+  into their own DI by hand, the way `authz` does in
+  `internal/authmw/module.go`.
+
+See [ROADMAP.md](ROADMAP.md) for the full picture, including what's planned
+next.

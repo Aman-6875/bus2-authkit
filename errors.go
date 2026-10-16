@@ -25,4 +25,10 @@ var (
 	// ErrForbidden means the token is valid, but the caller's roles don't
 	// grant the required role or permission.
 	ErrForbidden = errors.New("authkit: caller lacks required role or permission")
+
+	// ErrTokenStale means the token's signature, expiry, issuer, and
+	// audience all check out, but the user's roles (or one of their role's
+	// own permissions) changed after this token was issued — only
+	// detected when a FreshnessChecker is configured.
+	ErrTokenStale = errors.New("authkit: token's roles/permissions changed since it was issued")
 )

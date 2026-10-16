@@ -5,7 +5,7 @@ consuming service knows what it's getting — and what changes — when it
 bumps its required version. Update this file whenever a version's scope
 changes; it is the implementation plan, not just a changelog of the past.
 
-## v0.1.0 — current
+## v0.1.0 — superseded by v0.2.0
 
 Authentication, plus role-level authorization. No live permission data.
 
@@ -34,25 +34,49 @@ so issued tokens carry no `aud` claim. Services should leave `Config.Audience`
 empty until the panels are updated — this is a separate, not-yet-scheduled
 piece of work, tracked here so it isn't lost.
 
-## v0.2.0 — planned, not started
+## v0.2.0 — current
 
 Closes the freshness gap and makes `Can` production-usable at scale.
+Everything here is additive over v0.1.0 — a service using only
+`RequireRole`/`RequireAuth` needs no code change to upgrade.
 
-- **`FreshnessChecker`**: a new mechanism so `Verify` (or a wrapper around
-  it) can detect that a user's role/permissions changed *after* their
-  current token was issued, and reject the stale token before it expires
-  naturally. Backed by an event (Kafka/Redpanda) published by whichever
-  service owns role/membership data, consumed into a small, TTL-bounded
-  local cache in each service running authkit — not a per-request network
-  call. Applies to both role checks and permission checks equally.
-- **Live `PermissionResolver`**: a role→permission cache kept fresh the same
-  way, replacing the need for `StaticPermissions` in most services. The
-  `PermissionResolver` interface itself does not change — this is a new
-  implementation of it, not a breaking change to `Can`'s signature.
-- Impact on services already on v0.1.0: upgrading is additive. A service
-  using only `RequireRole`/`RequireAuth` sees no required code change.  A
-  service wanting the freshness guarantee or a live resolver opts in by
-  wiring the new pieces; nothing is forced on every consumer.
+- **`FreshnessChecker`** (`freshness.go`): detects that a user's
+  subject or roles changed *after* their current token was issued, and
+  `Verify` rejects the token (`ErrTokenStale`) before it expires naturally.
+  Backed by a TTL-bounded local cache (`userChangedAt`/`roleChangedAt`
+  maps), kept fresh by consuming `PermissionsChangedEvent`s in the
+  background — not a per-request network call. Opt in via
+  `Verifier.WithFreshnessChecker`; a `Verifier` with none attached behaves
+  exactly as it did on v0.1.0.
+- **`LivePermissions`** (`permissions.go`): a `PermissionResolver` backed by
+  a lazy, event-invalidated cache in front of a `RoleFetcher`. On a fetch
+  failure it denies (returns no permissions) rather than failing open. The
+  `PermissionResolver` interface itself is unchanged from v0.1.0 — this is
+  just a second implementation of it, alongside `StaticPermissions`.
+- **`authkit/kafka`**: the reference transport for both of the above — a
+  Redpanda/Kafka-backed `EventSource` (consumer) and `Publisher` (producer),
+  sharing one JSON envelope (matching `login-service`'s existing
+  `idp.events` convention) so neither side has to hand-roll the wire format.
+  TLS and a SASL mechanism are both optional `Config` fields — nil connects
+  unauthenticated (local dev); setting both authenticates (production). The
+  backing topic must have exactly one partition (no consumer group — every
+  instance needs to see every event) and a retention period roughly equal
+  to the longest `maxAge`/token TTL in use (reading starts from the
+  earliest retained offset, so a freshly started instance backfills recent
+  history).
+- **`HTTPRoleFetcher`** (`httpfetch.go`): the reference `RoleFetcher` —
+  calls `GET <BaseURL>/roles/<role>/permissions`, expecting
+  `{"permissions": [...]}`.
+
+**Still open — nothing publishes to the event topic yet.** This version
+gives every service the *consumer* side (`FreshnessChecker`,
+`LivePermissions`, `kafka.NewEventSource`) and the *tooling* to publish
+(`kafka.NewPublisher`), but no BUS 2.0 service calls `Publisher.Publish` on
+a role/membership change yet. Until some service does, `FreshnessChecker`
+and `LivePermissions` run with an always-empty event stream — harmless, but
+also not yet providing their real benefit. Wiring that into `authz` (whose
+`internal/rbac/membership` package owns the data that changes) is the next
+piece of work, outside this repo.
 
 ## Unscheduled / under discussion
 

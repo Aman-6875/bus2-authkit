@@ -29,9 +29,19 @@ type Config struct {
 // Verifier checks access tokens: signature (against the issuer's JWKS),
 // expiry, issuer, and audience.
 type Verifier struct {
-	keyfunc  keyfunc.Keyfunc
-	issuer   string
-	audience string
+	keyfunc   keyfunc.Keyfunc
+	issuer    string
+	audience  string
+	freshness *FreshnessChecker
+}
+
+// WithFreshnessChecker attaches fc so Verify also rejects tokens whose
+// subject or roles changed after the token was issued. Optional — a
+// Verifier with no FreshnessChecker attached trusts a token's claims at
+// face value until expiry, as it always has. Returns v for chaining.
+func (v *Verifier) WithFreshnessChecker(fc *FreshnessChecker) *Verifier {
+	v.freshness = fc
+	return v
 }
 
 // NewVerifier fetches (and keeps refreshed in the background) the issuer's
@@ -64,6 +74,9 @@ func (v *Verifier) Verify(tokenString string) (Claims, error) {
 
 	switch {
 	case err == nil:
+		if v.freshness != nil && v.freshness.IsStale(claims) {
+			return Claims{}, ErrTokenStale
+		}
 		return claims, nil
 	case errors.Is(err, jwt.ErrTokenExpired):
 		return Claims{}, fmt.Errorf("%w: %v", ErrTokenExpired, err)
