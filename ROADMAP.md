@@ -64,9 +64,11 @@ Everything here is additive over v0.1.0 — a service using only
   to the longest `maxAge`/token TTL in use (reading starts from the
   earliest retained offset, so a freshly started instance backfills recent
   history).
-- **`HTTPRoleFetcher`** (`httpfetch.go`): the reference `RoleFetcher` —
-  calls `GET <BaseURL>/roles/<role>/permissions`, expecting
-  `{"permissions": [...]}`.
+- **`HTTPRoleFetcher`** (`httpfetch.go`): the reference `RoleFetcher` — GETs
+  a URL built by a caller-supplied `URL func(role string) string`, expecting
+  `{"permissions": [...]}` back. Imposes no route convention of its own,
+  deliberately — the role-owning service keeps whatever URL shape it
+  already uses.
 
 **Still open — nothing publishes to the event topic yet.** This version
 gives every service the *consumer* side (`FreshnessChecker`,
@@ -77,6 +79,31 @@ and `LivePermissions` run with an always-empty event stream — harmless, but
 also not yet providing their real benefit. Wiring that into `authz` (whose
 `internal/rbac/membership` package owns the data that changes) is the next
 piece of work, outside this repo.
+
+## v0.2.1 — current
+
+A configurability pass over v0.2.0, prompted by `HTTPRoleFetcher` initially
+hardcoding a `/roles/<role>/permissions` path — a service's own API shape
+is never authkit's to assume. Fixed there, and audited the rest of the
+module for the same mistake:
+
+- `HTTPRoleFetcher.URL` (a `func(role string) string`) replaces the old
+  `BaseURL` field — it builds the whole request URL, so any route
+  convention works, not just one authkit happened to pick.
+- `Config.JWKSRefreshInterval` / `Config.JWKSHTTPTimeout`: override the
+  JWKS background-refresh cadence and per-fetch timeout, previously fixed
+  at the underlying library's own defaults with no way to change them.
+- `kafka.Config.DialTimeout`: override the broker connection timeout,
+  previously a fixed 10s.
+
+Explicitly **not** changed, and why — these looked similar but aren't the
+same kind of problem: `kafka.eventName` ("PERMISSIONS_CHANGED") is this
+module's own wire-protocol identifier, not an assumption about an external
+service's shape; `kafka.NewEventSource`'s fixed `Partition: 0` is load-bearing
+for the "every instance sees every event" guarantee, so making it
+configurable would let someone silently break that guarantee rather than
+fix a real limitation; `middleware`'s context key is a private
+implementation detail never meant to be touched from outside this module.
 
 ## Unscheduled / under discussion
 

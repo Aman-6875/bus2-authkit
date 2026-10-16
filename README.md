@@ -63,9 +63,11 @@ the values in — see "Configuration" below.
 
 | `Config` field | Required? | Notes |
 |---|---|---|
-| `JWKSURL` | Yes | The trusted Hydra instance's `/.well-known/jwks.json`. Fetched once at startup, refreshed hourly in the background, and refreshed immediately (rate-limited) if a token references an unknown key ID. |
+| `JWKSURL` | Yes | The trusted Hydra instance's `/.well-known/jwks.json`. Fetched once at startup, refreshed hourly in the background by default, and refreshed immediately (rate-limited) if a token references an unknown key ID. |
 | `Issuer` | Yes | Must match the token's `iss` claim exactly. |
 | `Audience` | **No** | Checked against the token's `aud` claim only if non-empty. Leave empty for services whose callers don't request an `audience` at `/oauth2/auth` yet — this is the case for every BUS 2.0 panel as of today, so most services should leave this empty for now. |
+| `JWKSRefreshInterval` | **No** | Overrides the hourly default background refresh. |
+| `JWKSHTTPTimeout` | **No** | Overrides the default timeout for each JWKS fetch. |
 
 `authkit` never reads environment variables itself (no `os.Getenv` anywhere
 in this module) — every consuming service owns its own config loading and
@@ -105,10 +107,17 @@ source := kafka.NewEventSource(kafka.Config{
 freshness, err := authkit.NewFreshnessChecker(ctx, source, time.Hour) // maxAge: longest token TTL this service accepts
 verifier.WithFreshnessChecker(freshness)
 
-livePerms, err := authkit.NewLivePermissions(ctx, authkit.HTTPRoleFetcher{BaseURL: "http://authz:8090"}, source)
+fetcher := authkit.HTTPRoleFetcher{
+	URL: func(role string) string { return "http://authz:8090/roles/" + role + "/permissions" },
+}
+livePerms, err := authkit.NewLivePermissions(ctx, fetcher, source)
 // use livePerms wherever a PermissionResolver is expected, e.g.:
 middleware.RequireCan(verifier, "refund_ticket", livePerms, refundHandler)
 ```
+
+`HTTPRoleFetcher.URL` builds the full request URL for a given role — it
+imposes no route convention of its own, so it fits whatever URL shape the
+role-owning service already exposes.
 
 Requirements for the Kafka/Redpanda topic backing `source`:
 - **Exactly one partition** — `NewEventSource` always reads partition 0; every
@@ -117,6 +126,9 @@ Requirements for the Kafka/Redpanda topic backing `source`:
 - **Retention roughly equal to the longest `maxAge`/token TTL in use** —
   `NewEventSource` starts from the earliest retained offset so a freshly
   started instance backfills recent history, not just new events.
+
+`kafka.Config.DialTimeout` overrides the default 10s broker connection
+timeout, if a service's network conditions need something different.
 
 The publishing side (e.g. `authz`, whenever it changes a role or membership):
 

@@ -5,15 +5,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
-	"strings"
 )
 
-// HTTPRoleFetcher implements RoleFetcher by calling
-// "<BaseURL>/roles/<role>/permissions" on the service that owns role data
-// (e.g. authz), expecting a JSON body shaped {"permissions": ["...", ...]}.
+// HTTPRoleFetcher implements RoleFetcher over plain HTTP GET. It imposes no
+// URL shape of its own — URL builds the request URL for role, so the
+// service on the other end can expose whatever route convention it already
+// uses (e.g. "/roles/operator_admin/permissions", "/api/v1/rbac/roles/operator_admin",
+// or anything else). The response must be JSON shaped
+// {"permissions": ["...", ...]}.
 type HTTPRoleFetcher struct {
-	BaseURL string
+	// URL returns the full request URL for role. Required.
+	URL func(role string) string
 
 	// Client is optional; http.DefaultClient is used if nil.
 	Client *http.Client
@@ -21,13 +23,16 @@ type HTTPRoleFetcher struct {
 
 // Permissions implements RoleFetcher.
 func (f HTTPRoleFetcher) Permissions(ctx context.Context, role string) ([]string, error) {
+	if f.URL == nil {
+		return nil, fmt.Errorf("authkit.HTTPRoleFetcher: URL is required")
+	}
+
 	client := f.Client
 	if client == nil {
 		client = http.DefaultClient
 	}
 
-	endpoint := strings.TrimSuffix(f.BaseURL, "/") + "/roles/" + url.PathEscape(role) + "/permissions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, f.URL(role), nil)
 	if err != nil {
 		return nil, fmt.Errorf("authkit.HTTPRoleFetcher: build request for role %q: %w", role, err)
 	}

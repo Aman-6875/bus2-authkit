@@ -37,9 +37,20 @@ type Config struct {
 	// github.com/segmentio/kafka-go/sasl. Leave nil for brokers that don't
 	// require authentication.
 	SASLMechanism sasl.Mechanism
+
+	// DialTimeout overrides how long NewEventSource's reader waits to
+	// establish a broker connection. Optional: zero uses defaultDialTimeout.
+	DialTimeout time.Duration
 }
 
-const dialTimeout = 10 * time.Second
+const defaultDialTimeout = 10 * time.Second
+
+func (cfg Config) dialTimeout() time.Duration {
+	if cfg.DialTimeout > 0 {
+		return cfg.DialTimeout
+	}
+	return defaultDialTimeout
+}
 
 // eventName is the "event" field this package reads and writes. A shared
 // topic may carry other event names (see login-service's idp.events
@@ -182,7 +193,7 @@ func NewEventSource(cfg Config) authkit.EventSource {
 			Partition:   0,
 			StartOffset: kafkago.FirstOffset,
 			Dialer: &kafkago.Dialer{
-				Timeout:       dialTimeout,
+				Timeout:       cfg.dialTimeout(),
 				TLS:           cfg.TLS,
 				SASLMechanism: cfg.SASLMechanism,
 			},

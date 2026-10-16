@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/golang-jwt/jwt/v5"
@@ -24,6 +25,16 @@ type Config struct {
 	// empty to skip this check, for services whose tokens don't carry an
 	// audience claim yet.
 	Audience string
+
+	// JWKSRefreshInterval overrides how often the JWKS is re-fetched in the
+	// background (it's also refreshed immediately, rate-limited, on an
+	// unrecognized key ID regardless of this setting). Optional: zero uses
+	// the underlying library's own default (currently 1 hour).
+	JWKSRefreshInterval time.Duration
+
+	// JWKSHTTPTimeout overrides the timeout for each JWKS fetch. Optional:
+	// zero uses the underlying library's own default.
+	JWKSHTTPTimeout time.Duration
 }
 
 // Verifier checks access tokens: signature (against the issuer's JWKS),
@@ -47,7 +58,10 @@ func (v *Verifier) WithFreshnessChecker(fc *FreshnessChecker) *Verifier {
 // NewVerifier fetches (and keeps refreshed in the background) the issuer's
 // JWKS from cfg.JWKSURL.
 func NewVerifier(ctx context.Context, cfg Config) (*Verifier, error) {
-	kf, err := keyfunc.NewDefaultCtx(ctx, []string{cfg.JWKSURL})
+	kf, err := keyfunc.NewDefaultOverrideCtx(ctx, []string{cfg.JWKSURL}, keyfunc.Override{
+		RefreshInterval: cfg.JWKSRefreshInterval,
+		HTTPTimeout:     cfg.JWKSHTTPTimeout,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("authkit.NewVerifier: %w", err)
 	}
